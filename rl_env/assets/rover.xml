@@ -1,0 +1,11 @@
+<mujoco model="rover">
+  <worldbody>
+    <!-- starts at the centre of the landing pad, facing north (+y) up the road -->
+    <body name="rover" mocap="true" pos="14 -19.5 0.08" quat="0.7071068 0 0 0.7071068">
+      <geom name="chassis" type="box" size="0.3 0.2 0.08" rgba="0.85 0.85 0.8 1"/>
+      <!-- red nose marks the front -->
+      <geom name="nose" type="box" size="0.04 0.04 0.02" pos="0.3 0 0.08"
+            contype="0" conaffinity="0" rgba="0.9 0.2 0.2 1"/>
+    </body>
+  </worldbody>
+</mujoco>

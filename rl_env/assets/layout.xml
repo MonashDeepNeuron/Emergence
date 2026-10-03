@@ -1,0 +1,78 @@
+<mujoco model="layout">
+   <include file="rover.xml"/>
+
+  <option timestep="0.005" gravity="0 0 -9.81"/>
+
+  <visual>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6"/>
+    <global offwidth="1280" offheight="720"/>
+  </visual>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512"
+             rgb1="0.45 0.45 0.45" rgb2="0.40 0.40 0.40"
+             mark="edge" markrgb="0.3 0.3 0.3"/>
+    <texture name="regolith" type="2d" file="regolith_mujoco_1024.png"/>
+    <material name="ground" texture="regolith" texrepeat="0.04 0.04" texuniform="true"/>
+    <texture type="skybox" builtin="gradient" width="1024" height="1024"
+             rgb1="0.02 0.02 0.05" rgb2="0 0 0"
+             mark="random" random="0.002" markrgb="1 1 1"/>
+
+  </asset>
+
+  <default>
+    <!-- Visual-only markers: nothing collides with them -->
+    <default class="marker">
+      <geom contype="0" conaffinity="0" group="2" rgba="0.08 0.20 0.50 0.15"/>
+      <!-- Roads: 3 m wide, flat on the ground -->
+      <default class="road">
+        <geom type="box"/>
+      </default>
+      <!-- Material pile and staging spots: muted translucent green -->
+      <default class="stash">
+        <geom type="box" rgba="0.18 0.40 0.22 0.3"/>
+      </default>
+    </default>
+    <!-- Material chunks: real bodies that collide with the floor and the rover -->
+    <default class="material">
+      <geom type="box" size="0.1 0.1 0.1" mass="1" rgba="0.22 0.22 0.24 1"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light name="sun" pos="0 0 10" dir="0 0 -1" directional="true"/>
+
+    <geom name="floor" type="plane" size="50 50 0.1" material="ground"/>
+
+
+    <!-- Main base (west): square; main road runs east from its right edge -->
+    <geom name="west_main_base" class="marker" type="box" pos="-32 0 0.002" size="11 11 0.001"/>
+
+    <!-- base (east): square at the end of the main road -->
+    <geom name="road_east_2" class="road" pos="5 0 0.002" size="26 1.5 0.001"/>
+    <geom name="east_base_2" class="marker" type="box" pos="37.5 0 0.002" size="6.5 6.5 0.001"/>
+
+    <!-- base (north): square; road goes north from the main road -->
+    <geom name="road_north_1" class="road" pos="-5 7 0.002" size="1.5 5.5 0.001"/>
+    <geom name="north_base_1" class="marker" type="box" pos="-5 18.5 0.002" size="6 6 0.001"/>
+
+    <!-- Landing pad (south): square; road goes south from the main road -->
+    <geom name="road_pad" class="road" pos="14 -7.25 0.002" size="1.5 5.75 0.001"/>
+    <geom name="landing_pad" class="marker" type="box" pos="14 -19.5 0.002" size="6.5 6.5 0.001"/>
+
+    <!-- Material pile zone (south-west): rectangle, no road -->
+    <geom name="material_zone" class="stash" pos="-22 -20 0.002" size="6 4 0.001"/>
+
+    <!-- Fixed overview camera looking at the whole site -->
+    <camera name="overview" pos="5 -55.5 67" xyaxes="1 0 0 0 0.786 0.618"/>
+
+
+    <!-- Materials: 30 x 20 = 600 blocks (0.2 m cubes) on a 0.4 m grid filling material_zone.
+         Names are mat_<col>_<row>: mat_00_00 (south-west corner) to mat_29_19 (north-east). -->
+    <replicate count="20" offset="0 0.4 0" sep="_">
+      <replicate count="30" offset="0.4 0 0" sep="_">
+        <body name="mat" pos="-27.8 -23.8 0.1"><freejoint/><geom class="material"/></body>
+      </replicate>
+    </replicate>
+  </worldbody>
+</mujoco>
