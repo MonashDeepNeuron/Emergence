@@ -13,9 +13,11 @@ STEP = 0.1
 TURN = np.radians(90)
 REACHABLE_L = 0.5
 REACHABLE_W = 0.2
-DROP_DIST = 0.45
+DROP_DIST = 0.4
 BLOCK_HALF = 0.1
 Z = 0.08
+VIEW_L = 2.0            # how far the camera can see (m)
+VIEW_ANGLE = np.radians(90) # camera field of view: 45 deg to each side
 
 class Rover:
     def __init__(self, model, data, name = "rover", yaw = np.pi / 2):
@@ -30,9 +32,12 @@ class Rover:
         self.z = model.geom("chassis").size[2]
 
         self.yaw = yaw
+        self.view_l = VIEW_L
+        self.view_angle = VIEW_ANGLE
         self.carrying = None
         self.blocks = np.array([b for b in range(model.nbody)
                                 if model.body(b).name.startswith("mat_")])
+
         self._sync() # push the starting pose into the simulation
 
 
@@ -84,6 +89,24 @@ class Rover:
         return True
 
 
+    # sensing
+    def dist_to_self(self, xy):
+        """World xy (one point or an array of points) -> (ahead, side) from the rover.
+        Positive side = left."""
+        xy = np.asarray(xy, dtype=float)
+        dx = xy[..., 0] - self.x
+        dy = xy[..., 1] - self.y
+        c, s = np.cos(self.yaw), np.sin(self.yaw)
+        return dx * c + dy * s, -dx * s + dy * c
+
+    def see_dist(self, xy):
+        """True for points within VIEW_L and inside the view_angle cone in front."""
+        ahead, side = self.dist_to_self(xy)
+        dist = np.hypot(ahead, side)
+        angle = np.arctan2(side, ahead)
+        return (dist <= self.view_l) & (np.abs(angle) <= self.view_angle / 2)
+
+
     # helpppeeersss by claudee
     def _place(self, block, x, y, z):
         """Teleport a block: set its position, reset rotation, stop it moving."""
@@ -102,6 +125,7 @@ class Rover:
 
 
 if __name__ == "__main__":
-    m = mujoco.MjModel.from_xml_path(str(LAYOUT))
-    d = mujoco.MjData(m)
-    rover = Rover(m, d)
+    model = mujoco.MjModel.from_xml_path(str(LAYOUT))
+    data = mujoco.MjData(model)
+
+    rover = Rover(model, data)
