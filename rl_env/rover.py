@@ -1,50 +1,42 @@
-"""
-Placeholder rover: forward, turn_left, turn_right, pick, drop. Nothing else.
-Moving teleports the rover. Picking/dropping teleports a material block.
-"""
-
 import numpy as np
 import mujoco
 from pathlib import Path
+import math
+
+
 
 LAYOUT = Path(__file__).parent / "assets" / "layout.xml"
 
-STEP = 0.1
-TURN = np.radians(90)
-REACHABLE_L = 0.5
-REACHABLE_W = 0.2
+# the robot is 0.6 long * 0.4 wide * 0.16 tall
+STEP = 0.2 # bc of the block width
+TURN = math.pi / 2
+REACHABLE_LEN = 0.5 # 0.5 - 0.6 / 2 = 0.2 ahead of the face
+REACHABLE_ANGLE = math.pi / 2
 DROP_DIST = 0.4
-BLOCK_HALF = 0.1
-Z = 0.08
-VIEW_L = 2.0            # how far the camera can see (m)
-VIEW_ANGLE = np.radians(90) # camera field of view: 45 deg to each side
+BLOCK_HALF_LEN = 0.1 # half a block size, the height a placed block sits at otherwise it goes under the floor
+ROBOT_HALF_HEIGHT = 0.08
+VIEWABLE_LEN = 2.0
+VIEWABLE_ANGLE = math.pi / 2
 
 class Rover:
-    def __init__(self, model, data, name = "rover", yaw = np.pi / 2):
-        self.model = model   # the world we built, the layout and rover
-        self.data = data # curr state of the world
-
-        body = model.body(name)
-
-        self.mocap = model.body_mocapid[body.id]
-
-        self.x, self.y = model.body_pos[body.id][:2]
-        self.z = model.geom("chassis").size[2]
-
+    def __init__(self, model, data, name = "rover", yaw = math.pi / 2, carry = None):
+        self.model = model
+        self.data = data
+        self.name = name
         self.yaw = yaw
-        self.view_l = VIEW_L
-        self.view_angle = VIEW_ANGLE
-        self.carrying = None
-        self.blocks = np.array([b for b in range(model.nbody)
-                                if model.body(b).name.startswith("mat_")])
+        self.carry = carry
 
-        self._sync() # push the starting pose into the simulation
+        body_id = model.body(name).id
+        self.mocap_id = model.body_mocapid[body_id]
 
+        if self.mocap_id != -1:
+            self.x, self.y, self.z = data.mocap_pos[self.mocap_id][:3]
+        else:
+            print("ERROR: need to config the rover to mocap = true")
 
-    # 5 actions: forward, turn_left, turn_right, pick up, drop
     def forward(self):
-        self.x += STEP * np.cos(self.yaw)
-        self.y += STEP * np.sin(self.yaw)
+        self.x += STEP * math.cos(self.yaw)
+        self.y += STEP * math.sin(self.yaw)
         self._sync()
 
     def turn_left(self):
@@ -55,77 +47,63 @@ class Rover:
         self.yaw -= TURN
         self._sync()
 
-    def pick(self):
-        # pikcs up the closest block in the front and reaturn true on success
-        if self.carrying is not None:
-            return False
-
-        # dx and dy all lists
-        dx = self.data.xpos[self.blocks, 0] - self.x
-        dy = self.data.xpos[self.blocks, 1] - self.y
-        ahead = dx * np.cos(self.yaw) + dy * np.sin(self.yaw)
-        side = -dx * np.sin(self.yaw) + dy * np.cos(self.yaw)
-
-        in_front = (ahead > 0) & (ahead <= REACHABLE_L) & (np.abs(side) <= REACHABLE_W)
-        if not in_front.any():
-            return False
+    def _check_reachable(self, ahead: float, side: float): # the env decides which material to pick
+        dist = math.sqrt(ahead ** 2 + side ** 2)
+        if dist <= REACHABLE_LEN and abs(math.atan2(side, ahead)) <= REACHABLE_ANGLE / 2:
+            return dist
+        return None
         
-        self.carrying = min(zip(self.blocks[in_front], ahead[in_front]),
-                    key = lambda pair: pair[1])[0]
 
+    def pick(self, seen_materials: list[tuple[int, float, float]]):
+        if self.carry != None: return None
+
+        target_material = (-1, math.inf)
+        for material_id, ahead, side in seen_materials:
+            maybe_dist = self._check_reachable(ahead, side)
+            if self._check_reachable(ahead, side):
+                dist = maybe_dist
+                if dist is not None and dist < target_material[1]:
+                    target_material = (material_id, dist)
+
+        if target_material[0] == -1: return None
+
+        self.carry = target_material[0]
         self._sync()
-        return True
 
-    def drop(self):
-        if self.carrying is None:
-            return False
-        self._place(self.carrying,
-                    self.x + DROP_DIST * np.cos(self.yaw),
-                    self.y + DROP_DIST * np.sin(self.yaw),
-                    BLOCK_HALF)
-        self.carrying = None
+        return self.carry
 
-        mujoco.mj_forward(self.model, self.data)
-        return True
+    def drop(self, seen_materials: list[tuple[int, float, float]]):
+        if self.carry is None: return None
 
+        for _, ahead, side in seen_materials:
+            if abs(ahead - DROP_DIST) < BLOCK_HALF_LEN and abs(side) < BLOCK_HALF_LEN:
+                return None
 
-    # sensing
-    def dist_to_self(self, xy):
-        """World xy (one point or an array of points) -> (ahead, side) from the rover.
-        Positive side = left."""
-        xy = np.asarray(xy, dtype=float)
-        dx = xy[..., 0] - self.x
-        dy = xy[..., 1] - self.y
-        c, s = np.cos(self.yaw), np.sin(self.yaw)
-        return dx * c + dy * s, -dx * s + dy * c
+        land_x = self.x + DROP_DIST * math.cos(self.yaw)
+        land_y = self.y + DROP_DIST * math.sin(self.yaw)
 
-    def see_dist(self, xy):
-        """True for points within VIEW_L and inside the view_angle cone in front."""
-        ahead, side = self.dist_to_self(xy)
-        dist = np.hypot(ahead, side)
-        angle = np.arctan2(side, ahead)
-        return (dist <= self.view_l) & (np.abs(angle) <= self.view_angle / 2)
-
-
-    # helpppeeersss by claudee
-    def _place(self, block, x, y, z):
-        """Teleport a block: set its position, reset rotation, stop it moving."""
-        joint = self.data.joint(self.model.body_jntadr[block])
-        joint.qpos[:] = [x, y, z, 1, 0, 0, 0]
+        # the below joint things are from claude. anyways
+        # teleport the material onto the landing spot, upright and still
+        joint = self.data.joint(self.model.body_jntadr[self.carry])
+        joint.qpos[:] = [land_x, land_y, BLOCK_HALF_LEN, 1, 0, 0, 0]
         joint.qvel[:] = 0
 
+        self.carry = None
+        self._sync()
+        return land_x, land_y
+
+    # _sync is from claude. bassically for viewer and other updates
     def _sync(self):
-        """Write the rover's pose (and the carried block) into the simulation."""
-        self.data.mocap_pos[self.mocap] = [self.x, self.y, self.z]
-        self.data.mocap_quat[self.mocap] = [np.cos(self.yaw / 2), 0, 0, np.sin(self.yaw / 2)]
-        
-        if self.carrying is not None:   # carried block rides on the roof
-            self._place(self.carrying, self.x, self.y, 2 * self.z + BLOCK_HALF)
-        mujoco.mj_forward(self.model, self.data)
+        """Write the rover's pose (and the carried block) into MuJoCo, then update it."""
+        self.data.mocap_pos[self.mocap_id] = [self.x, self.y, self.z]
+        self.data.mocap_quat[self.mocap_id] = [math.cos(self.yaw / 2), 0, 0, math.sin(self.yaw / 2)]
 
+        if self.carry is not None:   # carried block rides on the roof
+            joint = self.data.joint(self.model.body_jntadr[self.carry])
+            joint.qpos[:] = [self.x, self.y, 2 * ROBOT_HALF_HEIGHT + BLOCK_HALF_LEN, 1, 0, 0, 0]
+            joint.qvel[:] = 0
 
-if __name__ == "__main__":
-    model = mujoco.MjModel.from_xml_path(str(LAYOUT))
-    data = mujoco.MjData(model)
+        mujoco.mj_forward(self.model, self.data) # type: ignore
 
-    rover = Rover(model, data)
+    def __repr__(self):
+        return f"{self.name}: position: {self.x, self.y, self.z}, carrying?: {self.carry}"
