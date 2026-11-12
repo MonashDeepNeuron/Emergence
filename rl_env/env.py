@@ -1,297 +1,313 @@
-from pathlib import Path
-
-import gymnasium
-import mujoco
-
 import numpy as np
+import mujoco
+import gymnasium
 from gymnasium import spaces
-
-from rover import Rover, REACHABLE_L, REACHABLE_W, DROP_DIST, BLOCK_HALF
+from pathlib import Path
 
 import math
 
+from rover import Rover, STEP, TURN, REACHABLE_LEN, REACHABLE_ANGLE, DROP_DIST, BLOCK_HALF_LEN, ROBOT_HALF_LEN, ROBOT_HALF_HEIGHT, VIEWABLE_LEN, VIEWABLE_ANGLE
+
+
 LAYOUT = Path(__file__).parent / "assets" / "layout_train_1.xml"
 
-TILE = 0.2 
 MAX_STEPS = 2000
 
 # actions
-FORWARD, LEFT, RIGHT, PICK, DROP = range(5)
 N_ACTIONS = 5
+#  0      1      2      3     4
+FORWARD, LEFT, RIGHT, PICK, DROP = range(5)
 
 # rewards
 STEP_COST = -0.005
-TWD_GOAL = 0.03
-PICK_PILE = 0.2
-DROP_EMPTY = 0.5 
-DROP_FAR = 0.5 
-FAILED = -0.05   
-ALL_FILLED = 10
+STEP_OUT_ARENA = -0.05
+PICK_MATERIAL_FAIL = -0.1
+PICK_MATERIAL_SUCCESS = 0.1
+DROP_MATERIAL_FAIL = -0.1
+DROP_MATERIAL_SUCCESS = 0.1
+COMPLETE = 10.0
+# ... the rest is still in todo
 
-# helppeeerrsss
 
-
-# get a area's center and 1/2 l 1/2 w
-def _rect(model, name):
+def _rect(model, name) -> tuple[tuple[float, float], tuple[float, float]]:
     geom_feature = model.geom(name)
+
+    # <geom name="target_pad" class="marker" pos="1.8 0 0.002" size="0.5 0.3 0.001"/>
     return geom_feature.pos[:2].copy(), geom_feature.size[:2].copy()
 
-
-
-# checks if a point is inside a area or points
-def _is_inside(xy, centers, half):
-    if not hasattr(xy[0], "__len__"): # single
-        return all(abs(point - center) <= h for point, center, h in zip(xy, centers, half))
-
-    # not single
-    return [ 
-        all(abs(p - center) <= h for p, center, h in zip(point, centers, half))
-        for point in xy
-    ]
-
+# check if a point is inside a rectangle
+def _check_is_inside(corr: tuple[float, float], center: tuple[float, float], half: tuple[float, float]) -> bool:
+    return (center[0] - half[0]) <= corr[0] <= (center[0] + half[0]) and (center[1] - half[1]) <= corr[1] <= (center[1] + half[1])
+    
 
 
 class RoverEnv(gymnasium.Env):
     metadata = {"render_modes": []}
 
     def __init__(self):
+        super().__init__() # because we inherented from gym
 
-        self.model = mujoco.MjModel.from_xml_path(str(LAYOUT))
+        self.model = mujoco.MjModel.from_xml_path(str(LAYOUT)) # type: ignore
+        self.data = mujoco. MjData(self.model) # type: ignore
+        mujoco.mj_forward(self.model, self.data)  # type: ignore  # compute positions once
 
-        self.data = mujoco.MjData(self.model)
+        self.roby = Rover(self.model, self.data) # hiii~~~
+        self.step_count = 0
 
-        # areas,  the layout
-        self.arena_c, self.arena_h = _rect(self.model, "arena")
-        self.pile_c, self.pile_h = _rect(self.model, "material_zone")
-        self.pad_c, self.pad_h = _rect(self.model, "target_pad")
+        self.action_space = spaces.Discrete(N_ACTIONS)
+        self.observation_space = spaces.Box(-np.inf, np.inf, shape = (19,), dtype = np.float32)
+        self.steps = 0
+        self.prev_action = None
 
-        # sort the pad coners, to know which is the far most 
-        corners = [(self.pad_c[0] + xx * self.pad_h[0], self.pad_c[1] + yy * self.pad_h[1])
-                    for xx, yy in [(1, 1), (1, -1), (-1, 1), (-1, -1)]]
+        self.roby = Rover(self.model, self.data)
 
-        dists = [round (math.dist (corner, self.pile_c), 6) for corner in corners]
+        # the positions
+        # <geom name="arena" class="bounds" pos="0 0 0.001" size="3 3 0.001"/>
+        self.arena_info = _rect(self.model, "arena") # tuple(position(x, y), half_size(len, width))
 
-        order = sorted(range(len(corners)), key = lambda i: (-dists[i], corners[i][1])) # far first, ties: lower y first
-        self.corners = [corners[i] for i in order] # table
+        # <geom name="material_zone" class="stash" pos="-1.8 0 0.002" size="0.9 0.8 0.001"/>
+        self.material_zone_info = _rect(self.model, "material_zone")
 
-        # tile grid over the pad
-        self.pad_lowest = self.pad_c - self.pad_h
-        self.nx = round(2 * self.pad_h[0] / TILE)
-        self.ny = round(2 * self.pad_h[1] / TILE)
+        # <geom name="target_pad" class="marker" pos="1.8 0 0.002" size="0.5 0.3 0.001"/>
+        self.target_pad_info = _rect(self.model, "target_pad")
+        self.target_cell_len = BLOCK_HALF_LEN * 2
+        self.target_grid = {}
 
+        self.materials = [m for m in range(self.model.nbody)
+                          if self.model.body(m).name.startswith("mat_")] # the ids
+
+        target_cell_x0 = self.target_pad_info[0][0] - self.target_pad_info[0][1] + BLOCK_HALF_LEN
+        target_cell_y0 = self.target_pad_info[1][0] - self.target_pad_info[1][1] + BLOCK_HALF_LEN
+
+        max_x = round(2 * self.target_pad_info[0][0] / self.target_cell_len)
+        max_y = round(2 * self.target_pad_info[0][1] / self.target_cell_len)
+
+        self.target_grid_size = (max_x, max_y)     
+
+        # generate the grid corr
+        for i in range(max_x):
+            for j in range(max_y):
+                self.target_grid[(i, j)] = (
+                    target_cell_x0 + i * self.target_cell_len,
+                    target_cell_y0 + j * self.target_cell_len
+                )
+
+        # use sets to store what aterials has been used and which grod has alreasdy occupied
+        self.occupied = set()
+        self.placed_materials = set()
+
+
+
+    def _check_seeable(self, ahead: float, side: float) -> bool:
+        return math.sqrt(ahead ** 2 + side ** 2) <= VIEWABLE_LEN and abs(math.atan2(side, ahead)) <= VIEWABLE_ANGLE / 2
+
+    def _camera(self) -> list[tuple[int, float, float]]:
+        # this is very much a simulated version
+        roby = self.roby
+        cos_yaw, sin_yaw = math.cos(roby.yaw), math.sin(roby.yaw)
+
+
+        seeable_materials = []
+        for material_id in self.materials:
+            if material_id == roby.carry: continue
+            if material_id in self.placed_materials: continue
+
+            mat_pos = self.data.xpos[material_id]
+            # <body name="mat" pos="-2.6 -0.6 0.1"><freejoint/><geom class="material"/></body>
+            temp_x = mat_pos[0] - roby.x 
+            temp_y = mat_pos[1] - roby.y
+
+            ahead = temp_x * cos_yaw + temp_y * sin_yaw
+            side = -temp_x * sin_yaw + temp_y * cos_yaw
+            if self._check_seeable(ahead, side):
+                seeable_materials.append((material_id, ahead, side))
+
+        return seeable_materials
+
+
+    def _get_target_cell_corr(self, land_x: float, land_y: float) -> None | tuple[int, int]:
         """
-        tiles = []
-        for i in range(self.nx):  # column
-            for j in range(self.ny):  # row
-                x = self.pad_lowest[0] + TILE * (i + 0.5)
-                y = self.pad_lowest[1] + TILE * (j + 0.5)
-
-
-                tiles.append((x, y))
+        find the target grid cell containts the landin position
         """
-        # same as above
-        self.tiles = [(self.pad_lowest[0] + TILE * (column + 0.5),
-                       self.pad_lowest[1] + TILE * (row + 0.5))
-                      for column in range(self.nx)
-                      for row in range(self.ny)]
+        target_center = self.target_pad_info[0]
+        target_half_lens = self.target_pad_info[1]
 
-        # how far each tile is from the pile, -> [0, 1]
-        d = [
-                math.sqrt(sum((t - c) ** 2 for t, c in zip(tile, self.pile_c)))
-                for tile in self.tiles
-            ]
+        if not _check_is_inside((land_x, land_y), target_center, target_half_lens): return None
 
-        
-        self.tile_far = [(di - min(d)) / max(max(d) - min(d), 1e-9) for di in d]
+        corner_edge_x0 = target_center[0] - target_half_lens[0]
+        corner_edge_y0 = target_center[1] - target_half_lens[1]
 
-        
-        self.action_space = spaces.Discrete(N_ACTIONS) # from 0 - (n-1)
-        self.observation_space = spaces.Box(-np.inf, np.inf, shape=(28,), dtype = np.float32) # -np.inf, np.inf means the highest and lowest vals
-        # 28 == 2 + 2 + 1 + 1 + 2 + 8 + 1 + 3 + 3 + 5
-        # corr x y + cos sin + is carry + is reach + pile cent + coners + on_pad + nearest block + far most tile + prev action
+        i = int((land_x - corner_edge_x0) / self.target_cell_len)
+        j = int((land_x - corner_edge_y0) / self.target_cell_len)
 
-    def _blocks(self):
-        # corr of blocks not carried
+        i = min(i, round(2 * target_half_lens[0] / self.target_cell_len) - 1)
+        j = min(j, round(2 * target_half_lens[1] / self.target_cell_len) - 1)
 
-        b = self.rover.blocks
+        cell_corr = (i, j)
 
-        if self.rover.carrying is not None: # None or num the id
-            b = b[b != self.rover.carrying]
+        if cell_corr not in self.target_grid: return None
 
-        return self.data.xpos[b, :2]
-
-    def _tile_index(self, xy):
-        # TODO: 
-        indices = []
-        for x, y in xy:
-            i = math.floor((x - self.pad_lowest[0]) / TILE)   # column, counted from the pad's lowest corner
-            j = math.floor((y - self.pad_lowest[1]) / TILE)   # row
-            if 0 <= i < self.nx and 0 <= j < self.ny:
-                indices.append(i * self.ny + j)               # position in self.tiles
-            else:
-                indices.append(-1)                            # off the pad
-        return indices
-
-    def _filled(self):
-        """check fill"""
-        idx = self._tile_index(self._blocks())
-
-        filled = [False] * len(self.tiles)
-
-        for tile_number in idx:
-            if tile_number >= 0:
-                filled[tile_number] = True
-
-        return filled
-
-    def _dist_to_goal(self):
-        """Distance from the rover to its goal, the pile when no carry, the pad when carrying."""
-
-        goal = self.pad_c if self.rover.carrying is not None else self.pile_c
-        return math.dist((self.rover.x, self.rover.y), goal)
+        return cell_corr
 
     def _get_observation(self):
-        # TODO
-        rover = self.rover
+        """
+        roby's position, x and y coordinates, (float, float)
+        heading direction, cos and sin (float, float)
+        carrying material or not, bool
+        check if there is a material within reach
+        the relative position between the material pile center and the robot, (float, float)
+        the relative position between the tagte location and the robot, (float, float)
+        nearest seen material, ahead, side, seeable or not seeable, (float, float, bool)
+        ready to drop? bool
+        what is the last action, int
+        target grid occupancy, 15 values
+        completion ratio, float
+        """
+        roby = self.roby
+        arena_center = self.arena_info[0]
+        arena_half_lens = self.arena_info[1]
+        material_zone_center = self.material_zone_info[0]
+        # material_zone_half_lens = self.material_zone_info[1]
+        target_pad_center = self.target_pad_info[0]
+        # target_pad_half_lens = self.target_pad_info[1]
 
-        # 2
-        rover_position = [(rover.x - self.arena_c[0]) / self.arena_h[0], (rover.y - self.arena_c[1]) / self.arena_h[1]]
 
-        # 2
-        rover_heading = [math.cos(rover.yaw), math.sin(rover.yaw)]
+        roby_position = [(roby.x - arena_center[0]) / arena_half_lens[0], (roby.y - arena_center[1]) / arena_half_lens[1]]
+        roby_heading_direction = [math.cos(roby.yaw), math.sin(roby.yaw)]
+        roby_carrying = 1.0 if roby.carry != None else 0.0
 
-        # 1
-        is_carrying = float(rover.carrying is not None)
+        seeable_materials = self._camera()
+        check_reachable_material = any(roby._check_reachable(ahead, side) != None for _, ahead, side in seeable_materials)
+        check_reachable_material = 1.0 if check_reachable_material == True else 0.0
 
-        block_positions = self._blocks()
-        blocks_ahead, blocks_side = rover.dist_to_self(block_positions)
-        block_in_reach = float(any(
-                                        0 < ahead <= REACHABLE_L and abs(side) <= REACHABLE_W
-                                        for ahead, side in zip(blocks_ahead, blocks_side)
-                                    )
-                                )
+        roby_material_zone_center = [(roby.x - material_zone_center[0]) / arena_center[0], (roby.y - material_zone_center[1]) / arena_center[1]]
+        roby_target_pad_center = [(roby.x - target_pad_center[0]) / arena_center[0], (roby.y - target_pad_center[1]) / arena_center[1]]
+
+        nearest_material = [0.0, 0.0, 0.0]
+        if seeable_materials:
+            _, ahead, side = min(seeable_materials, key = lambda material: material[1] ** 2 + material[2] ** 2)
+            nearest_material = [ahead / VIEWABLE_LEN, side / VIEWABLE_LEN, 1.0]
 
 
-        view_range = rover.view_l
-        is_on_pad = float(_is_inside((rover.x, rover.y), self.pad_c, self.pad_h))
+        # check if the current planning frop material position has been occupied
+        check_cell_not_occupied = 0.0
 
-        block_is_visible = rover.see_dist(block_positions)
-        visible_blocks = [(ahead, side)
-                          for ahead, side, visible in zip(blocks_ahead, blocks_side, block_is_visible)
-                          if visible]
-        if visible_blocks:
-            nearest_ahead, nearest_side = min(visible_blocks,
-                                              key = lambda block: math.sqrt(block[0] ** 2 + block[1] ** 2))
-            nearest_block = [nearest_ahead / view_range, nearest_side / view_range, 1.0]
-        else:
-            nearest_block = [0.0, 0.0, 0.0]
+        if roby.carry != None:
+            land_x, land_y = roby.get_drop_position()
+            cell = self._get_target_cell_corr(land_x, land_y)
 
-        # empty tile in the camera cone that is farthest from the pile
-        tile_visi_empty = [(not filled) and visible
-                           for filled, visible in zip(self._filled(), rover.see_dist(self.tiles))]
+            if cell != None and cell not in self.occupied:
+                check_cell_not_occupied = 1.0
+
+        prev_action_ = -1.0 if self.prev_action == None else self.prev_action / (N_ACTIONS - 1)
+
+        target_grid_occupancy = [ 1.0 if (i, j) in self.occupied else 0.0 for i in range(self.target_grid_size[0]) for j in range(self.target_grid_size[1])]           
+
+        completion_ratio = len(self.occupied) / len(self.target_grid)
+
+        return np.array(
+            roby_position + 
+            roby_heading_direction + 
+            [roby_carrying, check_reachable_material] + 
+            roby_material_zone_center + 
+            roby_target_pad_center + 
+            nearest_material + 
+            [check_cell_not_occupied, prev_action_] + 
+            target_grid_occupancy + [completion_ratio], dtype = np.float32)
         
-        indices = [tile_number for tile_number, ok in enumerate(tile_visi_empty) if ok] # positions of every True value in the list
-        if indices:
-            far_tile = max(indices, key = lambda tile_number: self.tile_far[tile_number])
-            
-            ahead, side = rover.dist_to_self(self.tiles[far_tile])
-
-            farthest_empty_tile = [ahead / view_range, side / view_range, 1.0]
-        else:
-            farthest_empty_tile = [0.0, 0.0, 0.0]
-
-        last_action = np.zeros(N_ACTIONS)
-        if self.prev_action is not None:
-            last_action[self.prev_action] = 1.0
-
-
-        pile_center_rela = np.array(rover.dist_to_self(self.pile_c)) / view_range
-        pad_corners_rela = np.stack(rover.dist_to_self(self.corners), axis=1).ravel() / view_range
-        
-        return np.array(rover_position + rover_heading + [is_carrying, block_in_reach] + list(pile_center_rela) + \
-                list(pad_corners_rela) + [is_on_pad] + nearest_block + farthest_empty_tile + list(last_action),
-                dtype = np.float32)
-    # cld
-    def reset(self, seed = None, options = None):
-            super().reset(seed = seed)
-            mujoco.mj_resetData(self.model, self.data)
-            self.rover = Rover(self.model, self.data)
-            self.steps = 0
-            self.prev_action = None
-            self.last_dist = self._dist_to_goal()
-            return self._get_observation(), {}
 
     def step(self, action):
-        # TODO
-        roby = self.rover
+        """Apply one action; return (observation, reward, terminated, truncated, info)."""
+
+        # FORWARD, LEFT, RIGHT, PICK, DROP = range(5)
+
+        self.step_count += 1
         reward = STEP_COST
+
         action = int(action)
 
         if action == FORWARD:
-            old = (roby.x, roby.y)
-            roby.forward()
-            if not _is_inside((roby.x, roby.y), self.arena_c, self.arena_h):
-                roby.x, roby.y = old # blocked by the arena edge
-                roby._sync()
-                reward += FAILED
+            old_x, old_y = self.roby.x, self.roby.y
 
-        if action == LEFT: roby.turn_left()
+            self.roby.forward()
+            if not _check_is_inside((self.roby.x, self.roby.y), self.arena_info[0], self.arena_info[1]):
+                self.roby.x, self.roby.y = old_x, old_y
+                self.roby._sync()
 
-        if action == RIGHT: roby.turn_right()
+                reward += STEP_OUT_ARENA
+
+        if action == LEFT:
+            self.roby.turn_left()
+
+        if action == RIGHT:
+            self.roby.turn_right()
 
         if action == PICK:
-            block_positions = self._blocks()
-            blocks_ahead, blocks_side = roby.dist_to_self(block_positions)
-            in_reach = [(ahead, (x, y))
-                        for ahead, side, (x, y) in zip(blocks_ahead, blocks_side, block_positions)
-                        if 0 < ahead <= REACHABLE_L and abs(side) <= REACHABLE_W]
+            seeable_materials = self._camera()
+            picked_material = self.roby.pick(seeable_materials)
 
-            if roby.carrying is not None or not in_reach:
-                reward += FAILED 
-            else:
-                _, target = min(in_reach)
-                if _is_inside(target, self.pad_c, self.pad_h):
-                    reward += FAILED # it's on pad
-                else:
-                    roby.pick()
-                    if _is_inside(target, self.pile_c, self.pile_h):
-                        reward += PICK_PILE
+            if picked_material == None:
+                reward += PICK_MATERIAL_FAIL
+                return 
+
+            reward += PICK_MATERIAL_SUCCESS
 
         if action == DROP:
-            if roby.carrying is None:
-                reward += FAILED
+            if self.roby.carry == None:
+                reward += DROP_MATERIAL_FAIL
             else:
-                land = np.array([[roby.x + DROP_DIST * np.cos(roby.yaw),
-                                roby.y + DROP_DIST * np.sin(roby.yaw)]])
-                tile_index = self._tile_index(land)[0]
+                land_x, land_y = self.roby.get_drop_position()
+                target_cell_corr = self._get_target_cell_corr(land_x, land_y)
 
-                # check before dropping: only drop into an empty tile on the pad
-                if tile_index < 0 or self._filled()[tile_index]:
-                    reward += FAILED
+                if target_cell_corr == None or target_cell_corr in self.occupied:
+                    reward += DROP_MATERIAL_FAIL
                 else:
-                    block = roby.carrying
-                    roby.drop()
-                    roby._place(block, *self.tiles[tile_index], BLOCK_HALF) # TELEPORT
-                    mujoco.mj_forward(self.model, self.data)
-                    reward += DROP_EMPTY + DROP_FAR * self.tile_far[tile_index]
+                    cell_x, cell_y = self.target_grid[target_cell_corr]
+                    dropped_material = self.roby.carry
+                    self.roby.drop(cell_x, cell_y)
 
-        # reward for getting closer to the goal, penalty for moving away
-        dist = self._dist_to_goal()
-        reward += TWD_GOAL * (self.last_dist - dist)
-        self.last_dist = dist
+                    self.occupied.add(target_cell_corr)
+                    self.placed_materials.add(dropped_material)
 
-        self.steps += 1
+                    reward += DROP_MATERIAL_SUCCESS
+
         self.prev_action = action
 
-        filled = self._filled()
+        check_terminate = len(self.occupied) == len(self.target_grid)
+        check_truncate = self.steps >= MAX_STEPS
 
-        terminated = False
-        if all(filled):
-            reward += ALL_FILLED
-            terminated = True
-        elif roby.carrying is None and not any(_is_inside(self._blocks(), self.pile_c, self.pile_h)):
-            terminated = True                            # pile has run out
-        truncated = not terminated and self.steps >= MAX_STEPS
+        if check_terminate: reward += COMPLETE
 
-        info = {"filled_tiles": sum(filled)}
-        return self._get_observation(), float(reward), terminated, truncated, info
+        observation = self._get_observation()
+
+        info = {
+            "steps": self.steps,
+            "occupied_cells": len(self.occupied),
+            "total_cells": len(self.target_grid),
+            "completion_ratio": len(self.occupied) / len(self.target_grid),
+            "carrying": self.roby.carry is not None
+        }
+
+        return observation, reward, check_terminate, check_truncate, info
+            
+
+    def reset(self, seed = None, options = None):
+        """
+        Put the world back to the start; return (observation, info).
+        this part is from chat
+        """
+        super().reset(seed=seed)
+
+        # restore all MuJoCo bodies to their initial positions
+        mujoco.mj_resetData(self.model, self.data) # type: ignore
+        mujoco.mj_forward(self.model, self.data) # type: ignore
+
+        self.steps = 0
+        self.prev_action = None
+
+        self.occupied = set()
+        self.placed_materials = set()
+
+        self.roby = Rover(self.model, self.data)
+
+        return self._get_observation(), {}

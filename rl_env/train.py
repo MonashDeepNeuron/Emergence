@@ -75,7 +75,7 @@ def watch(path):
     with mujoco.viewer.launch_passive(env.model, env.data) as viewer:
         while viewer.is_running():
             action, _ = model.predict(obs, deterministic=True)
-            obs, reward, terminated, truncated, info = env.step(int(action))
+            obs, _, terminated, truncated, info = env.step(int(action))
             viewer.sync()
             time.sleep(0.05)
             if terminated or truncated:

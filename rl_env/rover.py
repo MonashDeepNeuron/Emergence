@@ -1,19 +1,16 @@
-import numpy as np
-import mujoco
-from pathlib import Path
 import math
 
+import mujoco
 
-
-LAYOUT = Path(__file__).parent / "assets" / "layout.xml"
 
 # the robot is 0.6 long * 0.4 wide * 0.16 tall
 STEP = 0.2 # bc of the block width
 TURN = math.pi / 2
 REACHABLE_LEN = 0.5 # 0.5 - 0.6 / 2 = 0.2 ahead of the face
 REACHABLE_ANGLE = math.pi / 2
-DROP_DIST = 0.4
+DROP_DIST = REACHABLE_LEN
 BLOCK_HALF_LEN = 0.1 # half a block size, the height a placed block sits at otherwise it goes under the floor
+ROBOT_HALF_LEN = 0.3
 ROBOT_HALF_HEIGHT = 0.08
 VIEWABLE_LEN = 2.0
 VIEWABLE_ANGLE = math.pi / 2
@@ -26,13 +23,14 @@ class Rover:
         self.yaw = yaw
         self.carry = carry
 
-        body_id = model.body(name).id
-        self.mocap_id = model.body_mocapid[body_id]
+        body_id = model.body(name).id # global body index
+        self.mocap_id = model.body_mocapid[body_id] # mocap-only index
 
         if self.mocap_id != -1:
             self.x, self.y, self.z = data.mocap_pos[self.mocap_id][:3]
         else:
-            print("ERROR: need to config the rover to mocap = true")
+            raise ValueError("ERROR: need to config the rover to mocap = true")
+
 
     def forward(self):
         self.x += STEP * math.cos(self.yaw)
@@ -54,11 +52,11 @@ class Rover:
         return None
         
 
-    def pick(self, seen_materials: list[tuple[int, float, float]]):
+    def pick(self, seeable_materials: list[tuple[int, float, float]]) -> None | int:
         if self.carry != None: return None
 
         target_material = (-1, math.inf)
-        for material_id, ahead, side in seen_materials:
+        for material_id, ahead, side in seeable_materials:
             maybe_dist = self._check_reachable(ahead, side)
             if self._check_reachable(ahead, side):
                 dist = maybe_dist
@@ -72,36 +70,50 @@ class Rover:
 
         return self.carry
 
-    def drop(self, seen_materials: list[tuple[int, float, float]]):
-        if self.carry is None: return None
-
-        for _, ahead, side in seen_materials:
-            if abs(ahead - DROP_DIST) < BLOCK_HALF_LEN and abs(side) < BLOCK_HALF_LEN:
-                return None
-
+    def get_drop_position(self) -> tuple[float, float]:
         land_x = self.x + DROP_DIST * math.cos(self.yaw)
         land_y = self.y + DROP_DIST * math.sin(self.yaw)
 
-        # the below joint things are from claude. anyways
+        return land_x, land_y
+
+    def drop(self, land_x: float, land_y: float) -> None | tuple[float, float]:
+        if self.carry is None:
+            return None
+
         # teleport the material onto the landing spot, upright and still
-        joint = self.data.joint(self.model.body_jntadr[self.carry])
-        joint.qpos[:] = [land_x, land_y, BLOCK_HALF_LEN, 1, 0, 0, 0]
-        joint.qvel[:] = 0
+        # the rest of the part all from chatGPT
+        joint_id = self.model.body_jntadr[self.carry]
+        qpos_id = self.model.jnt_qposadr[joint_id]
+        qvel_id = self.model.jnt_dofadr[joint_id]
+
+        self.data.qpos[qpos_id:qpos_id + 7] = [
+            land_x, land_y, BLOCK_HALF_LEN, 1, 0, 0, 0
+        ]
+        self.data.qvel[qvel_id:qvel_id + 6] = 0
 
         self.carry = None
         self._sync()
+
         return land_x, land_y
 
-    # _sync is from claude. bassically for viewer and other updates
+    # _sync is from claude. basically for viewer and other updates
     def _sync(self):
         """Write the rover's pose (and the carried block) into MuJoCo, then update it."""
         self.data.mocap_pos[self.mocap_id] = [self.x, self.y, self.z]
-        self.data.mocap_quat[self.mocap_id] = [math.cos(self.yaw / 2), 0, 0, math.sin(self.yaw / 2)]
+        self.data.mocap_quat[self.mocap_id] = [
+            math.cos(self.yaw / 2), 0, 0, math.sin(self.yaw / 2)
+        ]
 
         if self.carry is not None:   # carried block rides on the roof
-            joint = self.data.joint(self.model.body_jntadr[self.carry])
-            joint.qpos[:] = [self.x, self.y, 2 * ROBOT_HALF_HEIGHT + BLOCK_HALF_LEN, 1, 0, 0, 0]
-            joint.qvel[:] = 0
+            joint_id = self.model.body_jntadr[self.carry]
+            qpos_id = self.model.jnt_qposadr[joint_id]
+            qvel_id = self.model.jnt_dofadr[joint_id]
+
+            self.data.qpos[qpos_id:qpos_id + 7] = [
+                self.x, self.y, 2 * ROBOT_HALF_HEIGHT + BLOCK_HALF_LEN,
+                1, 0, 0, 0
+            ]
+            self.data.qvel[qvel_id:qvel_id + 6] = 0
 
         mujoco.mj_forward(self.model, self.data) # type: ignore
 

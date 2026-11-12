@@ -3,4 +3,4 @@ mujoco==3.13.0
 numpy==2.5.3
 stable-baselines3==2.9.0
 
-#                 python -m mujoco.viewer --mjcf="$(pwd)/assets/layout_train_1.xml"
+# python -m mujoco.viewer --mjcf="$(pwd)/assets/layout_train_1.xml"
