@@ -26,7 +26,11 @@ PICK_MATERIAL_SUCCESS = 0.1
 DROP_MATERIAL_FAIL = -0.1
 DROP_MATERIAL_SUCCESS = 0.1
 COMPLETE = 10.0
-# ... the rest is still in todo
+MOVE_TOWARD_MATERIAL_ZONE = 0.05
+MOVE_AWAY_FROM_MATERIAL_ZONE = -0.05
+MOVE_TOWARD_TARGET_PAD = 0.05
+MOVE_AWAY_FROM_TARGET_PAD = -0.05
+# maybe need more...
 
 
 def _rect(model, name) -> tuple[tuple[float, float], tuple[float, float]]:
@@ -40,7 +44,6 @@ def _check_is_inside(corr: tuple[float, float], center: tuple[float, float], hal
     return (center[0] - half[0]) <= corr[0] <= (center[0] + half[0]) and (center[1] - half[1]) <= corr[1] <= (center[1] + half[1])
     
 
-
 class RoverEnv(gymnasium.Env):
     metadata = {"render_modes": []}
 
@@ -52,10 +55,8 @@ class RoverEnv(gymnasium.Env):
         mujoco.mj_forward(self.model, self.data)  # type: ignore  # compute positions once
 
         self.roby = Rover(self.model, self.data) # hiii~~~
-        self.step_count = 0
 
         self.action_space = spaces.Discrete(N_ACTIONS)
-        self.observation_space = spaces.Box(-np.inf, np.inf, shape = (19,), dtype = np.float32)
         self.steps = 0
         self.prev_action = None
 
@@ -76,11 +77,12 @@ class RoverEnv(gymnasium.Env):
         self.materials = [m for m in range(self.model.nbody)
                           if self.model.body(m).name.startswith("mat_")] # the ids
 
-        target_cell_x0 = self.target_pad_info[0][0] - self.target_pad_info[0][1] + BLOCK_HALF_LEN
-        target_cell_y0 = self.target_pad_info[1][0] - self.target_pad_info[1][1] + BLOCK_HALF_LEN
+        pad_center, pad_half = self.target_pad_info
+        target_cell_x0 = pad_center[0] - pad_half[0] + BLOCK_HALF_LEN
+        target_cell_y0 = pad_center[1] - pad_half[1] + BLOCK_HALF_LEN
 
-        max_x = round(2 * self.target_pad_info[0][0] / self.target_cell_len)
-        max_y = round(2 * self.target_pad_info[0][1] / self.target_cell_len)
+        max_x = round(2 * pad_half[0] / self.target_cell_len)
+        max_y = round(2 * pad_half[1] / self.target_cell_len)
 
         self.target_grid_size = (max_x, max_y)     
 
@@ -95,6 +97,10 @@ class RoverEnv(gymnasium.Env):
         # use sets to store what aterials has been used and which grod has alreasdy occupied
         self.occupied = set()
         self.placed_materials = set()
+
+        # 16 fixed values + one per target cell (5 x 3 = 15) -> 31
+        n_obs = 16 + max_x * max_y
+        self.observation_space = spaces.Box(-np.inf, np.inf, shape = (n_obs,), dtype = np.float32)
 
 
 
@@ -138,7 +144,7 @@ class RoverEnv(gymnasium.Env):
         corner_edge_y0 = target_center[1] - target_half_lens[1]
 
         i = int((land_x - corner_edge_x0) / self.target_cell_len)
-        j = int((land_x - corner_edge_y0) / self.target_cell_len)
+        j = int((land_y - corner_edge_y0) / self.target_cell_len)
 
         i = min(i, round(2 * target_half_lens[0] / self.target_cell_len) - 1)
         j = min(j, round(2 * target_half_lens[1] / self.target_cell_len) - 1)
@@ -180,8 +186,8 @@ class RoverEnv(gymnasium.Env):
         check_reachable_material = any(roby._check_reachable(ahead, side) != None for _, ahead, side in seeable_materials)
         check_reachable_material = 1.0 if check_reachable_material == True else 0.0
 
-        roby_material_zone_center = [(roby.x - material_zone_center[0]) / arena_center[0], (roby.y - material_zone_center[1]) / arena_center[1]]
-        roby_target_pad_center = [(roby.x - target_pad_center[0]) / arena_center[0], (roby.y - target_pad_center[1]) / arena_center[1]]
+        roby_material_zone_center = [(roby.x - material_zone_center[0]) / arena_half_lens[0], (roby.y - material_zone_center[1]) / arena_half_lens[1]]
+        roby_target_pad_center = [(roby.x - target_pad_center[0]) / arena_half_lens[0], (roby.y - target_pad_center[1]) / arena_half_lens[1]]
 
         nearest_material = [0.0, 0.0, 0.0]
         if seeable_materials:
@@ -221,7 +227,7 @@ class RoverEnv(gymnasium.Env):
 
         # FORWARD, LEFT, RIGHT, PICK, DROP = range(5)
 
-        self.step_count += 1
+        self.steps += 1
         reward = STEP_COST
 
         action = int(action)
@@ -236,6 +242,27 @@ class RoverEnv(gymnasium.Env):
 
                 reward += STEP_OUT_ARENA
 
+            else:
+                # carrying -> head for the target pad, empty -> head for the material zone
+                if self.roby.carry != None:
+                    goal_center, goal_half_lens = self.target_pad_info
+                    move_toward, move_away = MOVE_TOWARD_TARGET_PAD, MOVE_AWAY_FROM_TARGET_PAD
+                else:
+                    goal_center, goal_half_lens = self.material_zone_info
+                    move_toward, move_away = MOVE_TOWARD_MATERIAL_ZONE, MOVE_AWAY_FROM_MATERIAL_ZONE
+
+                # already inside the goal rectangle after this move -> no need to calculate
+                # (checking the NEW position: stepping out of the rectangle still gets the away penalty,
+                # so the rover can't farm reward by hopping in and out of the edge)
+                if not _check_is_inside((self.roby.x, self.roby.y), goal_center, goal_half_lens):
+                    old_dist = math.hypot(old_x - goal_center[0], old_y - goal_center[1])
+                    new_dist = math.hypot(self.roby.x - goal_center[0], self.roby.y - goal_center[1])
+
+                    if new_dist < old_dist:
+                        reward += move_toward
+                    elif new_dist > old_dist:
+                        reward += move_away
+
         if action == LEFT:
             self.roby.turn_left()
 
@@ -248,9 +275,8 @@ class RoverEnv(gymnasium.Env):
 
             if picked_material == None:
                 reward += PICK_MATERIAL_FAIL
-                return 
-
-            reward += PICK_MATERIAL_SUCCESS
+            else:
+                reward += PICK_MATERIAL_SUCCESS
 
         if action == DROP:
             if self.roby.carry == None:
@@ -283,6 +309,7 @@ class RoverEnv(gymnasium.Env):
         info = {
             "steps": self.steps,
             "occupied_cells": len(self.occupied),
+            "filled_tiles": len(self.occupied),  # train.py reads this key
             "total_cells": len(self.target_grid),
             "completion_ratio": len(self.occupied) / len(self.target_grid),
             "carrying": self.roby.carry is not None
