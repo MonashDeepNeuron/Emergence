@@ -44,7 +44,7 @@ def train(timesteps):
 def test(path, episodes):
     env = RoverEnv()
     model = PPO.load(path)
-    n_tiles = len(env.tiles)
+    n_tiles = len(env.target_grid)
     rewards, filled, lengths = [], [], []
 
     for ep in range(episodes):

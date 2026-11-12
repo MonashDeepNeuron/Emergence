@@ -6,7 +6,7 @@ from pathlib import Path
 
 import math
 
-from rover import Rover, STEP, TURN, REACHABLE_LEN, REACHABLE_ANGLE, DROP_DIST, BLOCK_HALF_LEN, ROBOT_HALF_LEN, ROBOT_HALF_HEIGHT, VIEWABLE_LEN, VIEWABLE_ANGLE
+from rover import Rover, BLOCK_HALF_LEN, ROBOT_HALF_LEN, VIEWABLE_LEN, VIEWABLE_ANGLE, DROPABLE_LEN, REACHABLE_ANGLE
 
 
 LAYOUT = Path(__file__).parent / "assets" / "layout_train_1.xml"
@@ -30,6 +30,7 @@ MOVE_TOWARD_MATERIAL_ZONE = 0.05
 MOVE_AWAY_FROM_MATERIAL_ZONE = -0.05
 MOVE_TOWARD_TARGET_PAD = 0.05
 MOVE_AWAY_FROM_TARGET_PAD = -0.05
+MARGIN = ROBOT_HALF_LEN 
 # maybe need more...
 
 
@@ -42,6 +43,23 @@ def _rect(model, name) -> tuple[tuple[float, float], tuple[float, float]]:
 # check if a point is inside a rectangle
 def _check_is_inside(corr: tuple[float, float], center: tuple[float, float], half: tuple[float, float]) -> bool:
     return (center[0] - half[0]) <= corr[0] <= (center[0] + half[0]) and (center[1] - half[1]) <= corr[1] <= (center[1] + half[1])
+
+
+def _check_dropable(ahead: float, side: float): # mirror of _check_reachable, the env decides which cell
+        dist = math.sqrt(ahead ** 2 + side ** 2)
+        # ahead >= ROBOT_HALF_LEN: the cell has to be in front of the face, not under the rover itself
+        if ahead >= ROBOT_HALF_LEN and dist <= DROPABLE_LEN and abs(math.atan2(side, ahead)) <= REACHABLE_ANGLE / 2:
+            return dist
+        return None
+
+def _choose_drop_cell(cells: list[tuple[tuple[int, int], float, float]]) -> None | tuple[int, int]:
+        target_cell = (None, math.inf)
+        for cell, ahead, side in cells:
+            dist = _check_dropable(ahead, side)
+            if dist is not None and dist < target_cell[1]:
+                target_cell = (cell, dist)
+
+        return target_cell[0]
     
 
 class RoverEnv(gymnasium.Env):
@@ -131,29 +149,21 @@ class RoverEnv(gymnasium.Env):
         return seeable_materials
 
 
-    def _get_target_cell_corr(self, land_x: float, land_y: float) -> None | tuple[int, int]:
-        """
-        find the target grid cell containts the landin position
-        """
-        target_center = self.target_pad_info[0]
-        target_half_lens = self.target_pad_info[1]
+    def _empty_cells_in_view(self) -> list[tuple[tuple[int, int], float, float]]:
+        """every EMPTY target cell as (cell, ahead, side) relative to the rover, same frame as _camera"""
+        roby = self.roby
+        cos_yaw, sin_yaw = math.cos(roby.yaw), math.sin(roby.yaw)
 
-        if not _check_is_inside((land_x, land_y), target_center, target_half_lens): return None
+        cells = []
+        for cell, (cell_x, cell_y) in self.target_grid.items():
+            if cell in self.occupied: continue
+            temp_x = cell_x - roby.x
+            temp_y = cell_y - roby.y
+            ahead = temp_x * cos_yaw + temp_y * sin_yaw
+            side = -temp_x * sin_yaw + temp_y * cos_yaw
+            cells.append((cell, ahead, side))
 
-        corner_edge_x0 = target_center[0] - target_half_lens[0]
-        corner_edge_y0 = target_center[1] - target_half_lens[1]
-
-        i = int((land_x - corner_edge_x0) / self.target_cell_len)
-        j = int((land_y - corner_edge_y0) / self.target_cell_len)
-
-        i = min(i, round(2 * target_half_lens[0] / self.target_cell_len) - 1)
-        j = min(j, round(2 * target_half_lens[1] / self.target_cell_len) - 1)
-
-        cell_corr = (i, j)
-
-        if cell_corr not in self.target_grid: return None
-
-        return cell_corr
+        return cells
 
     def _get_observation(self):
         """
@@ -198,12 +208,8 @@ class RoverEnv(gymnasium.Env):
         # check if the current planning frop material position has been occupied
         check_cell_not_occupied = 0.0
 
-        if roby.carry != None:
-            land_x, land_y = roby.get_drop_position()
-            cell = self._get_target_cell_corr(land_x, land_y)
-
-            if cell != None and cell not in self.occupied:
-                check_cell_not_occupied = 1.0
+        if roby.carry != None and _choose_drop_cell(self._empty_cells_in_view()) != None:
+            check_cell_not_occupied = 1.0
 
         prev_action_ = -1.0 if self.prev_action == None else self.prev_action / (N_ACTIONS - 1)
 
@@ -254,7 +260,8 @@ class RoverEnv(gymnasium.Env):
                 # already inside the goal rectangle after this move -> no need to calculate
                 # (checking the NEW position: stepping out of the rectangle still gets the away penalty,
                 # so the rover can't farm reward by hopping in and out of the edge)
-                if not _check_is_inside((self.roby.x, self.roby.y), goal_center, goal_half_lens):
+                margin_half_lens = (goal_half_lens[0] + MARGIN, goal_half_lens[1] + MARGIN)
+                if not _check_is_inside((self.roby.x, self.roby.y), goal_center, margin_half_lens):
                     old_dist = math.hypot(old_x - goal_center[0], old_y - goal_center[1])
                     new_dist = math.hypot(self.roby.x - goal_center[0], self.roby.y - goal_center[1])
 
@@ -282,10 +289,9 @@ class RoverEnv(gymnasium.Env):
             if self.roby.carry == None:
                 reward += DROP_MATERIAL_FAIL
             else:
-                land_x, land_y = self.roby.get_drop_position()
-                target_cell_corr = self._get_target_cell_corr(land_x, land_y)
+                target_cell_corr = _choose_drop_cell(self._empty_cells_in_view())
 
-                if target_cell_corr == None or target_cell_corr in self.occupied:
+                if target_cell_corr == None:
                     reward += DROP_MATERIAL_FAIL
                 else:
                     cell_x, cell_y = self.target_grid[target_cell_corr]

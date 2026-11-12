@@ -4,3 +4,9 @@ numpy==2.5.3
 stable-baselines3==2.9.0
 
 # python -m mujoco.viewer --mjcf="$(pwd)/assets/layout_train_1.xml"
+
+# pip install mujoco gymnasium stable-baselines3
+# python train.py                  # train, 500k steps by default
+# python train.py --steps 2000000  # train longer
+# python train.py --test           # score runs/best/best_model.zip over 20 episodes
+# mjpython train.py --watch        # watch it in the viewer (on macOS you need mjpython; elsewhere plain python works)

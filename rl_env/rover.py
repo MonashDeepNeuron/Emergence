@@ -6,9 +6,9 @@ import mujoco
 # the robot is 0.6 long * 0.4 wide * 0.16 tall
 STEP = 0.2 # bc of the block width
 TURN = math.pi / 2
-REACHABLE_LEN = 0.5 # 0.5 - 0.6 / 2 = 0.2 ahead of the face
+REACHABLE_LEN = 0.55 # 0.55 - 0.6 / 2 = 0.25 ahead of the face
 REACHABLE_ANGLE = math.pi / 2
-DROP_DIST = REACHABLE_LEN
+DROPABLE_LEN = REACHABLE_LEN # max distance, not a fixed one (same idea as REACHABLE_LEN)
 BLOCK_HALF_LEN = 0.1 # half a block size, the height a placed block sits at otherwise it goes under the floor
 ROBOT_HALF_LEN = 0.3
 ROBOT_HALF_HEIGHT = 0.08
@@ -69,12 +69,6 @@ class Rover:
         self._sync()
 
         return self.carry
-
-    def get_drop_position(self) -> tuple[float, float]:
-        land_x = self.x + DROP_DIST * math.cos(self.yaw)
-        land_y = self.y + DROP_DIST * math.sin(self.yaw)
-
-        return land_x, land_y
 
     def drop(self, land_x: float, land_y: float) -> None | tuple[float, float]:
         if self.carry is None:
