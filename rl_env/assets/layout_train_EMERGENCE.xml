@@ -1,0 +1,106 @@
+<mujoco model="layout_emergence">
+
+  <option timestep="0.005" gravity="0 0 -9.81"/>
+
+  <visual>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6"/>
+    <global offwidth="1280" offheight="720"/>
+  </visual>
+
+
+  <default>
+    <!-- Visual-only markers: nothing collides with them -->
+    <default class="marker">
+      <geom type="box" contype="0" conaffinity="0" group="2" rgba="0.08 0.20 0.50 0.15"/>
+      <default class="stash">
+        <geom rgba="0.18 0.40 0.22 0.3"/>
+      </default>
+      <default class="bounds">
+        <geom rgba="0.5 0.5 0.5 0.05"/>
+      </default>
+    </default>
+    <default class="material">
+      <geom type="box" size="0.1 0.1 0.1" mass="1" rgba="0.22 0.22 0.24 1"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light name="sun" pos="0 0 10" dir="0 0 -1" directional="true"/>
+    <geom name="floor" type="plane" size="12 12 0.1" rgba="0.45 0.45 0.45 1"/>
+
+    <!-- Rover starts at the arena centre, between the pile (south) and the text (north), facing north (+y). -->
+    <body name="rover" mocap="true" pos="0 0 0.08" quat="0.7071068 0 0 0.7071068">
+      <geom name="chassis" type="box" size="0.3 0.2 0.08" rgba="0.85 0.85 0.8 1"/>
+      <!-- red nose marks the front -->
+      <geom name="nose" type="box" size="0.04 0.04 0.02" pos="0.3 0 0.08"
+            contype="0" conaffinity="0" rgba="0.9 0.2 0.2 1"/>
+    </body>
+
+    <!-- Arena: rover is kept inside x in [-9.0, 9.0], y in [-6.5, 6.5] -->
+    <geom name="arena" class="bounds" pos="0 0 0.001" size="9.0 6.5 0.001"/>
+
+    <!-- Material pile (south) -->
+    <geom name="material_zone" class="stash" pos="0 -3.20 0.002" size="4.05 3.00 0.001"/>
+
+    <!-- Target pads: the word EMERGENCE in a 5-row pixel font, 0.4 m per font pixel (2 x 2 blocks).
+         Split into 37 axis-aligned rectangles, target_pad_0 .. target_pad_36, numbered left to right
+         letter by letter. Every rectangle is a whole number of 0.2 m blocks and all of them sit on the
+         same 0.2 m grid. 380 cells in total. -->
+    <!-- E -->
+    <geom name="target_pad_0" class="marker" pos="-7.0 5.4 0.002" size="0.6 0.2 0.001"/>
+    <geom name="target_pad_1" class="marker" pos="-7.4 4.4 0.002" size="0.2 0.8 0.001"/>
+    <geom name="target_pad_2" class="marker" pos="-7.0 4.6 0.002" size="0.2 0.2 0.001"/>
+    <geom name="target_pad_3" class="marker" pos="-6.8 3.8 0.002" size="0.4 0.2 0.001"/>
+    <!-- M -->
+    <geom name="target_pad_4" class="marker" pos="-5.8 4.6 0.002" size="0.2 1.0 0.001"/>
+    <geom name="target_pad_5" class="marker" pos="-4.2 4.6 0.002" size="0.2 1.0 0.001"/>
+    <geom name="target_pad_6" class="marker" pos="-5.4 5.0 0.002" size="0.2 0.2 0.001"/>
+    <geom name="target_pad_7" class="marker" pos="-4.6 5.0 0.002" size="0.2 0.2 0.001"/>
+    <geom name="target_pad_8" class="marker" pos="-5.0 4.6 0.002" size="0.2 0.2 0.001"/>
+    <!-- E -->
+    <geom name="target_pad_9" class="marker" pos="-3.0 5.4 0.002" size="0.6 0.2 0.001"/>
+    <geom name="target_pad_10" class="marker" pos="-3.4 4.4 0.002" size="0.2 0.8 0.001"/>
+    <geom name="target_pad_11" class="marker" pos="-3.0 4.6 0.002" size="0.2 0.2 0.001"/>
+    <geom name="target_pad_12" class="marker" pos="-2.8 3.8 0.002" size="0.4 0.2 0.001"/>
+    <!-- R -->
+    <geom name="target_pad_13" class="marker" pos="-1.6 5.4 0.002" size="0.4 0.2 0.001"/>
+    <geom name="target_pad_14" class="marker" pos="-1.8 4.4 0.002" size="0.2 0.8 0.001"/>
+    <geom name="target_pad_15" class="marker" pos="-1.0 5.0 0.002" size="0.2 0.2 0.001"/>
+    <geom name="target_pad_16" class="marker" pos="-1.4 4.6 0.002" size="0.2 0.2 0.001"/>
+    <geom name="target_pad_17" class="marker" pos="-1.0 4.0 0.002" size="0.2 0.4 0.001"/>
+    <!-- G -->
+    <geom name="target_pad_18" class="marker" pos="0.2 5.4 0.002" size="0.6 0.2 0.001"/>
+    <geom name="target_pad_19" class="marker" pos="-0.2 4.4 0.002" size="0.2 0.8 0.001"/>
+    <geom name="target_pad_20" class="marker" pos="0.6 4.2 0.002" size="0.2 0.6 0.001"/>
+    <geom name="target_pad_21" class="marker" pos="0.2 3.8 0.002" size="0.2 0.2 0.001"/>
+    <!-- E -->
+    <geom name="target_pad_22" class="marker" pos="1.8 5.4 0.002" size="0.6 0.2 0.001"/>
+    <geom name="target_pad_23" class="marker" pos="1.4 4.4 0.002" size="0.2 0.8 0.001"/>
+    <geom name="target_pad_24" class="marker" pos="1.8 4.6 0.002" size="0.2 0.2 0.001"/>
+    <geom name="target_pad_25" class="marker" pos="2.0 3.8 0.002" size="0.4 0.2 0.001"/>
+    <!-- N -->
+    <geom name="target_pad_26" class="marker" pos="3.0 4.6 0.002" size="0.2 1.0 0.001"/>
+    <geom name="target_pad_27" class="marker" pos="4.2 4.6 0.002" size="0.2 1.0 0.001"/>
+    <geom name="target_pad_28" class="marker" pos="3.4 5.0 0.002" size="0.2 0.2 0.001"/>
+    <geom name="target_pad_29" class="marker" pos="3.8 4.6 0.002" size="0.2 0.2 0.001"/>
+    <!-- C -->
+    <geom name="target_pad_30" class="marker" pos="5.4 5.4 0.002" size="0.6 0.2 0.001"/>
+    <geom name="target_pad_31" class="marker" pos="5.0 4.4 0.002" size="0.2 0.8 0.001"/>
+    <geom name="target_pad_32" class="marker" pos="5.6 3.8 0.002" size="0.4 0.2 0.001"/>
+    <!-- E -->
+    <geom name="target_pad_33" class="marker" pos="7.0 5.4 0.002" size="0.6 0.2 0.001"/>
+    <geom name="target_pad_34" class="marker" pos="6.6 4.4 0.002" size="0.2 0.8 0.001"/>
+    <geom name="target_pad_35" class="marker" pos="7.0 4.6 0.002" size="0.2 0.2 0.001"/>
+    <geom name="target_pad_36" class="marker" pos="7.2 3.8 0.002" size="0.4 0.2 0.001"/>
+
+    <camera name="overview" pos="0 -14 16" xyaxes="1 0 0 0 0.75 0.66"/>
+
+    <!-- Materials: 26 x 19 = 494 blocks (0.2 m cubes) on a 0.3 m grid in material_zone.
+         494 blocks for 380 cells leaves ~30% spare for wasted drops. -->
+    <replicate count="19" offset="0 0.3 0" sep="_">
+      <replicate count="26" offset="0.3 0 0" sep="_">
+        <body name="mat" pos="-3.75 -5.90 0.1"><freejoint/><geom class="material"/></body>
+      </replicate>
+    </replicate>
+  </worldbody>
+</mujoco>

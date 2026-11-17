@@ -4,14 +4,13 @@ from pathlib import Path
 
 import mujoco.viewer
 import numpy as np
+from env import RoverEnv, LAYOUT
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.env_util import make_vec_env
 
-from env import RoverEnv
-
-RUNS = Path(__file__).parent / "runs"
+RUNS = Path(__file__).parent / "runs" / LAYOUT.stem
 N_ENVS = 8
 
 def train(timesteps):
@@ -25,7 +24,7 @@ def train(timesteps):
         best_model_save_path = str(RUNS / "best"),
         log_path = str(RUNS / "eval"),
         eval_freq = 50000 // N_ENVS, # how often to test the model. per 
-        n_eval_episodes = 10, # how many episode each test run
+        n_eval_episodes = 1, # how many episode each test run
         deterministic=True,
     )
 

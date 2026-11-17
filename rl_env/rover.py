@@ -2,9 +2,8 @@ import math
 
 import mujoco
 
-
 # the robot is 0.6 long * 0.4 wide * 0.16 tall
-STEP = 0.2 # bc of the block width
+STEP = 0.05 # bc of the block width
 TURN = math.pi / 2
 REACHABLE_LEN = 0.55 # 0.55 - 0.6 / 2 = 0.25 ahead of the face
 REACHABLE_ANGLE = math.pi / 2
